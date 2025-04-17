@@ -64,7 +64,7 @@ dataset.graph['edge_index'], dataset.graph['node_feat'] = \
 ### Load method ###
 model = parse_method(args, n, c, d, device)
 
-criterion = nn.NLLLoss()
+criterion = nn.CrossEntropyLoss()
 eval_func = eval_acc
 logger = Logger(args.runs, args)
 
@@ -88,7 +88,6 @@ for run in range(args.runs):
         optimizer.zero_grad()
 
         out = model(dataset.graph['node_feat'], dataset.graph['edge_index'])
-        out = F.log_softmax(out, dim=1)
         loss = criterion(
             out[train_idx], dataset.label.squeeze(1)[train_idx])
         loss.backward()
