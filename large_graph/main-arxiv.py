@@ -117,16 +117,15 @@ for run in range(args.runs):
         out1 = model(data.x, data.edge_index)
         loss1 = criterion(
             out1[train_idx], data.y[train_idx])
-        #out = model(data.x, data.edge_index) this has an error (with dropout set to 0) if 1e-4 if rerun
+        # this has an error (with dropout set to 0) of 1e-4 if rerun
         out = model(batch.x, batch.edge_index)
-        #breakpoint()
         split_size = train_idx.shape[0]
         loss = criterion(out[:split_size], batch.y[:split_size])
         #breakpoint()
         print(f"DEBUG: labels same:{(data.y[train_idx] == batch.y[:split_size]).all()}")
         print(f"DEBUG: edge_indices same: {torch.all(sort_edge_index(batch.n_id.to(device)[batch.edge_index]) == sort_edge_index(data.edge_index))}")
         print(f"DEBUG: data same:{ torch.all(data.x[batch.n_id] == batch.x) }")
-        print(f"DEBUG: out diff: {(out[batch.n_id]-out1).norm()}")
+        print(f"DEBUG: out diff: {(out-out1[batch.n_id]).norm()}")
         loss.backward()
         optimizer.step()
 
