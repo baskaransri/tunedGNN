@@ -1,5 +1,34 @@
 import torch
 import torch.nn.functional as F
+import torchmetrics as tm
+
+@torch.no_grad()
+def evaluate_tm(model, dataset, split_idx, eval_obj, criterion, args,result=None):
+    if result is not None:
+        out = result
+    else:
+        model.eval()
+        out = model(dataset.graph['node_feat'], dataset.graph['edge_index'])
+    train_acc = eval_obj(
+        out[split_idx['train']], dataset.label[split_idx['train']].squeeze(1))
+    valid_acc = eval_obj(
+        out[split_idx['valid']], dataset.label[split_idx['valid']].squeeze(1))
+    test_acc = eval_obj(
+        out[split_idx['test']], dataset.label[split_idx['test']].squeeze(1))
+
+    if args.dataset in ('questions'):
+        if dataset.label.shape[1] == 1:
+            true_label = F.one_hot(dataset.label, dataset.label.max() + 1).squeeze(1)
+        else:
+            true_label = dataset.label
+        valid_loss = criterion(out[split_idx['valid']], true_label.squeeze(1)[
+            split_idx['valid']].to(torch.float))
+    else:
+        #out = F.log_softmax(out, dim=1)
+        valid_loss = criterion(
+            out[split_idx['valid']], dataset.label.squeeze(1)[split_idx['valid']])
+
+    return train_acc, valid_acc, test_acc, valid_loss, out
 
 @torch.no_grad()
 def evaluate(model, dataset, split_idx, eval_func, criterion, args, result=None):
@@ -24,7 +53,7 @@ def evaluate(model, dataset, split_idx, eval_func, criterion, args, result=None)
         valid_loss = criterion(out[split_idx['valid']], true_label.squeeze(1)[
             split_idx['valid']].to(torch.float))
     else:
-        out = F.log_softmax(out, dim=1)
+        #out = F.log_softmax(out, dim=1)
         valid_loss = criterion(
             out[split_idx['valid']], dataset.label.squeeze(1)[split_idx['valid']])
 
@@ -56,7 +85,7 @@ def evaluate_cpu(model, dataset, split_idx, eval_func, criterion, args, device, 
         valid_loss = criterion(out[split_idx['valid']], true_label.squeeze(1)[
             split_idx['valid']].to(torch.float))
     else:
-        out = F.log_softmax(out, dim=1)
+        #out = F.log_softmax(out, dim=1)
         valid_loss = criterion(
             out[split_idx['valid']], dataset.label.squeeze(1)[split_idx['valid']])
 

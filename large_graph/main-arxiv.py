@@ -6,6 +6,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.utils import to_undirected, remove_self_loops, add_self_loops
 
+from torch_geometric.data import Data
+import torchmetrics as tm
+
+
 from lg_parse import parse_method, parser_add_main_args
 import sys
 
@@ -58,14 +62,17 @@ dataset.graph['edge_index'] = to_undirected(dataset.graph['edge_index'])
 dataset.graph['edge_index'], _ = remove_self_loops(dataset.graph['edge_index'])
 dataset.graph['edge_index'], _ = add_self_loops(dataset.graph['edge_index'], num_nodes=n)
 
-dataset.graph['edge_index'], dataset.graph['node_feat'] = \
-    dataset.graph['edge_index'].to(device), dataset.graph['node_feat'].to(device)
+dataset.graph['edge_index'], dataset.graph['node_feat'] = dataset.graph['edge_index'].to(device), dataset.graph['node_feat'].to(device)
+data = Data(x = dataset.graph['node_feat'], y = dataset.label.squeeze(1), edge_index = dataset.graph['edge_index'])
+data = data.to(device)
+print(f"DEBUG: x: {data.x.device}, y:{data.y.device}")
 
 ### Load method ###
 model = parse_method(args, n, c, d, device)
 
 criterion = nn.CrossEntropyLoss()
 eval_func = eval_acc
+eval_obj = tm.Accuracy(task="multiclass", num_classes=c).to(device)
 logger = Logger(args.runs, args)
 
 model.train()
@@ -87,13 +94,16 @@ for run in range(args.runs):
         model.train()
         optimizer.zero_grad()
 
-        out = model(dataset.graph['node_feat'], dataset.graph['edge_index'])
+        out = model(data.x, data.edge_index)
         loss = criterion(
-            out[train_idx], dataset.label.squeeze(1)[train_idx])
+            out[train_idx], data.y[train_idx])
         loss.backward()
         optimizer.step()
 
-        result = evaluate(model, dataset, split_idx, eval_func, criterion, args)
+        #result = evaluate(model, dataset, split_idx, eval_func, criterion, args)
+        result = evaluate_tm(model, dataset, split_idx, eval_obj, criterion, args)
+        #diffs = max([ torch.abs(acc1-acc2)  for acc1, acc2 in zip(result[:-1], result_tm[:-1]) ])
+        #print(f"BASKY: max diff in acc: {diffs}")
 
         logger.add_result(run, result[:-1])
 
