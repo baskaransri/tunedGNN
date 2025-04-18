@@ -100,8 +100,26 @@ for run in range(args.runs):
             num_workers = 2,
             pin_memory = True
             )
+    valid_loader = NeighborLoader(
+            data,
+            input_nodes = split_idx['valid'],
+            num_neighbors = [data.num_nodes] * 100,
+            batch_size = data.num_nodes,
+            num_workers = 2,
+            )
+    test_loader = NeighborLoader(
+            data,
+            input_nodes = split_idx['test'],
+            num_neighbors = [data.num_nodes] * 100,
+            batch_size = data.num_nodes,
+            num_workers = 2,
+            )
 
+    train_acc = tm.Accuracy(task="multiclass", num_classes=c).to(device)
+    valid_acc = train_acc.clone()
+    test_acc  = train_acc.clone()
 
+    prev_t_acc = None
     for epoch in range(args.epochs):
 
         model.train()
@@ -113,23 +131,57 @@ for run in range(args.runs):
         # So we expect that
         # out1[batch.n_id] == out
 
-        batch = next(iter(train_loader))
-        out = model(batch.x, batch.edge_index)
-        split_size = train_idx.shape[0]
-        loss = criterion(out[:split_size], batch.y[:split_size])
-        loss.backward()
-        optimizer.step()
+        for batch, valid_batch, test_batch in zip(train_loader, valid_loader, test_loader):
+            #batch = next(iter(train_loader))
+            train_batch = batch
+            out = model(batch.x, batch.edge_index)
+            split_size = train_idx.shape[0]
+            loss = criterion(out[:split_size], batch.y[:split_size])
 
-        result = evaluate_tm(model, dataset, split_idx, eval_obj, criterion, args)
+            t_acc = train_acc(out[:split_size], batch.y[:split_size])
+            if prev_t_acc is None:
+                print(f"tm.update result diff: Need at least one epoch")
+            else:
+                print(f"tm.update result diff: {prev_t_acc - t_acc}")
+            loss.backward()
+            optimizer.step()
 
-        logger.add_result(run, result[:-1])
+            result_old  = evaluate(model, dataset, split_idx, eval_func, criterion, args)
+            result      = evaluate_dl(model, train_batch, valid_batch, test_batch,   split_idx, eval_obj, criterion, args)
+            print(f"result diff: {(torch.tensor(result[:-1]) - torch.tensor(result_old[:-1])).norm()}")
+            prev_t_acc = result[0]
 
-        if result[1] > best_val:
-            best_val = result[1]
-            best_test = result[2]
-            if args.save_model:
-                save_model(args, model, optimizer, run)
+            logger.add_result(run, result[:-1])
 
+            if result[1] > best_val:
+                best_val = result[1]
+                best_test = result[2]
+                if args.save_model:
+                    save_model(args, model, optimizer, run)
+
+        for valid_batch in valid_loader:
+            valid_out = model(valid_batch.x, valid_batch.edge_index)
+            valid_split_size = valid_batch.input_id.shape[0]
+            valid_acc.update(
+                    valid_out[:valid_split_size], 
+                    valid_batch.y[:valid_split_size])
+            valid_loss = criterion(
+                    valid_out[:valid_split_size], valid_batch.y[:valid_split_size])
+
+        for test_batch in test_loader:
+            test_out = model(test_batch.x, test_batch.edge_index)
+            test_split_size = test_batch.input_id.shape[0]
+            test_acc.update(
+                    test_out[:test_split_size], 
+                    test_batch.y[:test_split_size])
+
+        print(f"tm.update valid result diff: {result[1] - valid_acc.compute()}")
+        print(f"tm.update test result diff: {result[2] - test_acc.compute()}")
+            
+
+        train_acc.reset()
+        valid_acc.reset()
+        test_acc.reset()
         if epoch % args.display_step == 0:
             print(f'Epoch: {epoch:02d}, '
                   f'Loss: {loss:.4f}, '
