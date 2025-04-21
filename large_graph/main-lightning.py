@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.utils import to_undirected, remove_self_loops, add_self_loops, sort_edge_index
+from torch_geometric.utils import to_undirected, remove_self_loops, add_self_loops, sort_edge_index, index_to_mask, mask_to_index
 
 from torch_geometric.data import Data
 from torch_geometric.loader import NeighborLoader
@@ -93,8 +93,17 @@ for run in range(args.runs):
     if args.save_model:
         save_model(args, model, optimizer, run)
 
+    #we poison the test labels; this uses more GPU memory from duplication
+    #but more easily lets us see our code is correct.
+    #not_train_mask = (~index_to_mask(split_idx['train'], size=data.num_nodes))
+    #not_valid_mask = (~index_to_mask(split_idx['valid'], size=data.num_nodes))
+    train_data = data.clone()
+    valid_data = data.clone()
+    #train_data.y[not_train_mask] = 0
+    #valid_data.y[not_valid_mask] = 0
+
     train_loader = NeighborLoader(
-            data,
+            train_data,
             input_nodes = split_idx['train'],
             num_neighbors = [data.num_nodes] * 100,
             batch_size = data.num_nodes,
@@ -102,7 +111,7 @@ for run in range(args.runs):
             pin_memory = True
             )
     valid_loader = NeighborLoader(
-            data,
+            train_data,
             input_nodes = split_idx['valid'],
             num_neighbors = [data.num_nodes] * 100,
             batch_size = data.num_nodes,
@@ -146,8 +155,8 @@ for run in range(args.runs):
             valid_acc.update(
                     valid_out[:valid_split_size], 
                     valid_batch.y[:valid_split_size])
-            #valid_loss = criterion(
-            #        valid_out[:valid_split_size], valid_batch.y[:valid_split_size])
+            valid_loss = criterion(
+                    valid_out[:valid_split_size], valid_batch.y[:valid_split_size])
 
         for test_batch in test_loader:
             test_out = model(test_batch.x, test_batch.edge_index)
@@ -159,8 +168,7 @@ for run in range(args.runs):
         result = (train_acc.compute().detach(),
                   valid_acc.compute().detach(),
                   test_acc.compute().detach(),
-                  #valid_loss.detach(),
-                  (),())
+                  valid_loss.detach(), ())
             
         logger.add_result(run, result[:-1])
 
