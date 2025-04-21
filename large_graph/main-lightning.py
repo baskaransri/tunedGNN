@@ -95,12 +95,12 @@ for run in range(args.runs):
 
     #we poison the test labels; this uses more GPU memory from duplication
     #but more easily lets us see our code is correct.
-    #not_train_mask = (~index_to_mask(split_idx['train'], size=data.num_nodes))
-    #not_valid_mask = (~index_to_mask(split_idx['valid'], size=data.num_nodes))
+    not_train_mask = (~index_to_mask(split_idx['train'], size=data.num_nodes))
+    not_valid_mask = (~index_to_mask(split_idx['valid'], size=data.num_nodes))
     train_data = data.clone()
     valid_data = data.clone()
-    #train_data.y[not_train_mask] = 0
-    #valid_data.y[not_valid_mask] = 0
+    train_data.y[not_train_mask] = 0
+    valid_data.y[not_valid_mask] = 0
 
     train_loader = NeighborLoader(
             train_data,
@@ -111,7 +111,7 @@ for run in range(args.runs):
             pin_memory = True
             )
     valid_loader = NeighborLoader(
-            train_data,
+            valid_data,
             input_nodes = split_idx['valid'],
             num_neighbors = [data.num_nodes] * 100,
             batch_size = data.num_nodes,
