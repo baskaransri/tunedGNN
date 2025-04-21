@@ -69,16 +69,9 @@ dataset.graph['edge_index'], dataset.graph['node_feat'] = dataset.graph['edge_in
 data = Data(x = dataset.graph['node_feat'], y = dataset.label.squeeze(1), edge_index = dataset.graph['edge_index'])
 data = data.to(device)
 
-### Load method ###
-model = parse_method(args, n, c, d, device)
-#model = GCN(-1, args.hidden_channels, args.local_layers, c).to(device)
-
 
 criterion = nn.CrossEntropyLoss()
 eval_func = eval_acc
-eval_obj = tm.Accuracy(task="multiclass", num_classes=c).to(device)
-logger = Logger(args.runs, args)
-
 
 class LightningGCN(L.LightningModule):
     def __init__(self):
@@ -120,19 +113,11 @@ class LightningGCN(L.LightningModule):
                 lr=args.lr)
         return optimizer
 
-model.train()
-print('MODEL:', model)
 
 ### Training loop ###
 for run in range(args.runs):
     split_idx = split_idx_lst[run]
     train_idx = split_idx['train'].to(device)
-    model.reset_parameters()
-    optimizer = torch.optim.Adam(model.parameters(),weight_decay=args.weight_decay, lr=args.lr)
-    best_val = float('-inf')
-    best_test = float('-inf')
-    if args.save_model:
-        save_model(args, model, optimizer, run)
 
     #we poison the test labels; this uses more GPU memory from duplication
     #but more easily lets us see our code is correct.
@@ -176,82 +161,4 @@ for run in range(args.runs):
     print(f"Train acc: {x[0]}")
     print(f"Valid acc: {x[1]}")
     print(f"Test acc: {x[2]}")
-
-
-
-
-
-
-
-    train_acc = tm.Accuracy(task="multiclass", num_classes=c).to(device)
-    valid_acc = train_acc.clone()
-    test_acc  = train_acc.clone()
-
-    for epoch in range(args.epochs):
-
-        model.train()
-        optimizer.zero_grad()
-
-        #The following are true:
-        # torch.all(sort_edge_index(batch.n_id.to(device)[batch.edge_index]) == sort_edge_index(data.edge_index))
-        # torch.all(data.x[batch.n_id] == batch.x)
-        # So we expect that
-        # out1[batch.n_id] == out
-
-        for batch in train_loader:
-            #print(f"BASKY: {batch.input_id.shape}")
-            out = model(batch.x, batch.edge_index)
-            split_size = batch.input_id.shape[0]
-            loss = criterion(out[:split_size], batch.y[:split_size])
-
-            train_acc.update(out[:split_size], batch.y[:split_size])
-            loss.backward()
-            optimizer.step()
-
-        for valid_batch in valid_loader:
-            valid_out = model(valid_batch.x, valid_batch.edge_index)
-            valid_split_size = valid_batch.input_id.shape[0]
-            valid_acc.update(
-                    valid_out[:valid_split_size], 
-                    valid_batch.y[:valid_split_size])
-            valid_loss = criterion(
-                    valid_out[:valid_split_size], valid_batch.y[:valid_split_size])
-
-        for test_batch in test_loader:
-            test_out = model(test_batch.x, test_batch.edge_index)
-            test_split_size = test_batch.input_id.shape[0]
-            test_acc.update(
-                    test_out[:test_split_size], 
-                    test_batch.y[:test_split_size])
-
-        result = (train_acc.compute().detach(),
-                  valid_acc.compute().detach(),
-                  test_acc.compute().detach(),
-                  valid_loss.detach(), ())
-            
-        logger.add_result(run, result[:-1])
-
-        if result[1] > best_val:
-            best_val = result[1]
-            best_test = result[2]
-            if args.save_model:
-                save_model(args, model, optimizer, run)
-
-
-        train_acc.reset()
-        valid_acc.reset()
-        test_acc.reset()
-        if epoch % args.display_step == 0:
-            print(f'Epoch: {epoch:02d}, '
-                  f'Loss: {loss:.4f}, '
-                  f'Train: {100 * result[0]:.2f}%, '
-                  f'Valid: {100 * result[1]:.2f}%, '
-                  f'Test: {100 * result[2]:.2f}%, '
-                  f'Best Valid: {100 * best_val:.2f}%, '
-                  f'Best Test: {100 * best_test:.2f}%')
-    logger.print_statistics(run)
-
-results = logger.print_statistics()
-### Save results ###
-save_result(args, results)
 
