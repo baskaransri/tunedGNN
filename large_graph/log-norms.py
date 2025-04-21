@@ -11,6 +11,7 @@ from torch_geometric.loader import NeighborLoader
 import torchmetrics as tm
 from torch_geometric.nn.models import GCN
 import lightning as L
+from lightning.pytorch.utilities import CombinedLoader
 
 
 from lg_parse import parse_method, parser_add_main_args
