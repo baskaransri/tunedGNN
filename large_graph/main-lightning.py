@@ -79,6 +79,47 @@ eval_func = eval_acc
 eval_obj = tm.Accuracy(task="multiclass", num_classes=c).to(device)
 logger = Logger(args.runs, args)
 
+
+class LightningGCN(L.LightningModule):
+    def __init__(self):
+        super().__init__()
+        self.save_hyperparameters()
+        self.model = parse_method(args, n, c, d, device)
+        self.loss_fn = nn.CrossEntropyLoss()
+        self.train_acc = tm.Accuracy(task="multiclass", num_classes=c)
+        self.valid_acc = self.train_acc.clone()
+        self.test_acc = self.train_acc.clone()
+
+    def forward_on_split(self, batch):
+        out = self.model(batch.x, batch.edge_index)
+        split_size = batch.input_id.shape[0]
+        return (out[:split_size], batch.y[:split_size])
+
+    def training_step(self, batch):
+        out, labels = self.forward_on_split(batch)
+        loss = self.loss_fn(out, labels)
+        self.train_acc(out, labels)
+        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch):
+        out, labels = self.forward_on_split(batch)
+        self.valid_acc(out, labels)
+        self.log("valid_acc", self.valid_acc, on_step=False, on_epoch=True, prog_bar=True)
+
+    def test_step(self, batch):
+        out, labels = self.forward_on_split(batch)
+        self.test_acc(out, labels)
+        self.log("test_acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(
+                self.model.parameters(),
+                weight_decay=args.weight_decay,
+                lr=args.lr)
+        return optimizer
+
 model.train()
 print('MODEL:', model)
 
@@ -105,8 +146,8 @@ for run in range(args.runs):
     train_loader = NeighborLoader(
             train_data,
             input_nodes = split_idx['train'],
-            num_neighbors = [data.num_nodes] * 100,
-            batch_size = data.num_nodes,
+            num_neighbors = [5,5,5],
+            batch_size = 4000,
             num_workers = 2,
             pin_memory = True
             )
@@ -125,6 +166,18 @@ for run in range(args.runs):
             num_workers = 2,
             )
 
+
+    lightning_model = LightningGCN()
+    trainer = L.Trainer( max_epochs=args.epochs)
+    trainer.fit(model=lightning_model, train_dataloaders=train_loader, val_dataloaders=valid_loader)
+    trainer.test(lightning_model, dataloaders=test_loader)
+
+
+
+
+
+
+
     train_acc = tm.Accuracy(task="multiclass", num_classes=c).to(device)
     valid_acc = train_acc.clone()
     test_acc  = train_acc.clone()
@@ -141,8 +194,9 @@ for run in range(args.runs):
         # out1[batch.n_id] == out
 
         for batch in train_loader:
+            #print(f"BASKY: {batch.input_id.shape}")
             out = model(batch.x, batch.edge_index)
-            split_size = train_idx.shape[0]
+            split_size = batch.input_id.shape[0]
             loss = criterion(out[:split_size], batch.y[:split_size])
 
             train_acc.update(out[:split_size], batch.y[:split_size])

@@ -133,7 +133,7 @@ for run in range(args.runs):
 
         for batch in train_loader:
             out = model(batch.x, batch.edge_index)
-            split_size = train_idx.shape[0]
+            split_size = batch.input_id.shape[0]
             loss = criterion(out[:split_size], batch.y[:split_size])
 
             train_acc.update(out[:split_size], batch.y[:split_size])
