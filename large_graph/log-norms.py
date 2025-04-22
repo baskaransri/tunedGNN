@@ -126,6 +126,12 @@ class LightningGCN(L.LightningModule):
         )
         return loss
 
+    def on_before_optimizer_step(self, optimizer):
+        # Compute the 2-norm for each layer
+        # If using mixed precision, the gradients are already unscaled here
+        norms = grad_norm(self.layer, norm_type=2)
+        self.log_dict(norms)
+
     def validation_step(self, batch):
         out, labels = self.forward_on_split(batch)
         self.valid_acc(out, labels)
@@ -197,7 +203,14 @@ for run in range(args.runs):
     trainer = L.Trainer(max_epochs=args.epochs)
     trainer.fit(
         model=lightning_model,
-        train_dataloaders=train_loader_combo,
+        train_dataloaders=train_loader_minibatch,
+        val_dataloaders=valid_loader,
+    )
+    lightning_model = LightningGCN()
+    trainer = L.Trainer(max_epochs=args.epochs)
+    trainer.fit(
+        model=lightning_model,
+        train_dataloaders=train_loader_fullbatch,
         val_dataloaders=valid_loader,
     )
     print("Testing...")
