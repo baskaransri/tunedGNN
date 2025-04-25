@@ -101,6 +101,25 @@ criterion = nn.CrossEntropyLoss()
 eval_func = eval_acc
 
 
+def aggregate_grad_layers(batch_norm_dict):
+    d = batch_norm_dict
+
+    gstr = "grad_2.0_norm"
+    res = {}
+    res["norm_total"] = d[gstr + "_total"]
+    # List layer numbers
+    constr = gstr + "/convs."
+    layer_nums = [
+        k.split(constr)[1].split(".")[0] for k in d.keys() if (k.startswith(constr))
+    ]
+    layer_nums = list(set(map(int, layer_nums)))
+    for l in layer_nums:
+        relevant_keys = [k for k in d.keys() if k.startswith(constr + str(l))]
+        layer_norm = sqrt(sum([d[k] ** 2 for k in relevant_keys]))
+        res["l" + str(l) + "_total"] = layer_norm
+    return res
+
+
 class LightningGCN(L.LightningModule):
     def __init__(self):
         super().__init__()
@@ -111,12 +130,25 @@ class LightningGCN(L.LightningModule):
         self.valid_acc = self.train_acc.clone()
         self.test_acc = self.train_acc.clone()
 
+        self.cv_coeff = 0.1
+        self.automatic_optimization = False
+
     def forward_on_split(self, batch):
         out = self.model(batch.x, batch.edge_index)
         split_size = batch.input_id.shape[0]
         return (out[:split_size], batch.y[:split_size])
 
-    def training_step(self, batch):
+    def linearised_forward_on_split(self, batch):
+        out = self.model.linear_forward(batch.x, batch.edge_index)
+        split_size = batch.input_id.shape[0]
+        return (out[:split_size], batch.y[:split_size])
+
+    def compute_loss(self, batch):
+        out, labels = self.forward_on_split(batch)
+        loss = self.loss_fn(out, labels)
+        return loss
+
+    def compute_loss_and_log(self, batch):
         out, labels = self.forward_on_split(batch)
         loss = self.loss_fn(out, labels)
         self.train_acc(out, labels)
@@ -126,11 +158,92 @@ class LightningGCN(L.LightningModule):
         )
         return loss
 
-    def on_before_optimizer_step(self, optimizer):
-        # Compute the 2-norm for each layer
-        # If using mixed precision, the gradients are already unscaled here
-        norms = grad_norm(self.layer, norm_type=2)
-        self.log_dict(norms)
+    def compute_linearised_loss(self, batch):
+        out, labels = self.linearised_forward_on_split(batch)
+        loss = self.loss_fn(out, labels)
+        return loss
+
+    # def training_step(self, batch):
+    #     return self.compute_loss_and_log(batch)
+
+    def training_step(self, batch):
+        opt = self.optimizers()
+        # We only want to compute gradients for the batch nodes
+        # so we fake the full_graph 'input_id's to be the same as the batch ones
+        # so that compute_loss only checks those
+        # full_input_id = batch["full"].input_id.clone()
+        batch["full"].input_id = batch["partial"].input_id
+        # firstly compute the difference in gradients between the batch and full
+        # by linearity of gradient we can just compute the difference
+        opt.zero_grad()
+        loss_batch = self.compute_loss(batch["partial"])
+        self.manual_backward(loss_batch)
+        # now we log the norms!
+        norms = grad_norm(self.model, norm_type=2)
+        dbatch = aggregate_grad_layers(norms)
+        opt.zero_grad()
+        loss_diff = self.compute_loss(batch["partial"]) - self.compute_loss(
+            batch["full"]
+        )
+        self.manual_backward(loss_diff)
+        # now we log the norms!
+        norms = grad_norm(self.model, norm_type=2)
+        # tot_key = [k for k in norms.keys() if "norm_total" in k][0]
+        # norm_total_batch_minus_full = norms[tot_key]
+        dbatch_minus_full = aggregate_grad_layers(norms)
+        # now calculate CV-adjusted grad vs full
+        opt.zero_grad()
+        cv_loss_adj = self.compute_linearised_loss(
+            batch["partial"]
+        ) - self.compute_linearised_loss(batch["full"])
+        cv_loss = self.compute_loss(batch["partial"]) - (self.cv_coeff * cv_loss_adj)
+        self.manual_backward(cv_loss)
+        norms = grad_norm(self.model, norm_type=2)
+        dcv = aggregate_grad_layers(norms)
+        # now look at diffs
+        opt.zero_grad()
+        cv_loss_adj = self.compute_linearised_loss(
+            batch["partial"]
+        ) - self.compute_linearised_loss(batch["full"])
+        cv_loss_diff = (
+            self.compute_loss(batch["partial"]) - (self.cv_coeff * cv_loss_adj)
+        ) - self.compute_loss(batch["full"])
+        self.manual_backward(cv_loss_diff)
+        # now we log the norms!
+        norms = grad_norm(self.model, norm_type=2)
+        dcv_minus_full = aggregate_grad_layers(norms)
+
+        # now calculate and log the full-batch grad
+        opt.zero_grad()
+        # batch["full"].input_id = full_input_id
+        loss = self.compute_loss_and_log(batch["full"])
+        self.manual_backward(loss)
+        # log for full batch:
+        norms = grad_norm(self.model, norm_type=2)
+        dfull = aggregate_grad_layers(norms)
+        # compute relative errs
+        dlmc_rel = {k: dbatch_minus_full[k] / dfull[k] for k in dfull.keys()}
+        dlmc_rel_cv = {k: dcv_minus_full[k] / dfull[k] for k in dfull.keys()}
+        # now format output
+        dfull = {f"full_batch/{k}": v for k, v in dfull.items()}
+        dbatch = {f"minibatch/{k}": v for k, v in dbatch.items()}
+        dcv = {f"cv/{k}": v for k, v in dcv.items()}
+        dbatch_minus_full = {
+            f"full_minus_minibatch/{k}": v for k, v in dbatch_minus_full.items()
+        }
+        dcv_minus_full = {f"full_minus_cv/{k}": v for k, v in dcv_minus_full.items()}
+        dlmc_rel = {f"lmc_rel_err/{k}": v for k, v in dlmc_rel.items()}
+        dlmc_rel_cv = {f"lmc_rel_err_cv/{k}": v for k, v in dlmc_rel_cv.items()}
+        self.log_dict(
+            dfull
+            | dbatch
+            | dcv
+            | dbatch_minus_full
+            | dcv_minus_full
+            | dlmc_rel
+            | dlmc_rel_cv
+        )
+        opt.step()
 
     def validation_step(self, batch):
         out, labels = self.forward_on_split(batch)
@@ -203,14 +316,7 @@ for run in range(args.runs):
     trainer = L.Trainer(max_epochs=args.epochs)
     trainer.fit(
         model=lightning_model,
-        train_dataloaders=train_loader_minibatch,
-        val_dataloaders=valid_loader,
-    )
-    lightning_model = LightningGCN()
-    trainer = L.Trainer(max_epochs=args.epochs)
-    trainer.fit(
-        model=lightning_model,
-        train_dataloaders=train_loader_fullbatch,
+        train_dataloaders=train_loader_combo,
         val_dataloaders=valid_loader,
     )
     print("Testing...")
