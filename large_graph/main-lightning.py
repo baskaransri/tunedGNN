@@ -177,8 +177,10 @@ for run in range(args.runs):
     train_loader = NeighborLoader(
         train_data,
         input_nodes=split_idx["train"],
-        num_neighbors=[5, 5, 5],
-        batch_size=4000,
+        #num_neighbors=[5, 5, 5],
+        #batch_size=4000,
+        num_neighbors=[data.num_nodes] * 100,
+        batch_size=data.num_nodes,
         num_workers=2,
         pin_memory=True,
     )
@@ -207,8 +209,9 @@ for run in range(args.runs):
         val_dataloaders=valid_loader,
     )
     print("Testing...")
+    #we instantiate a new trainer to make sure the testing happens on CPU so we don't have memory issues
     L.Trainer(accelerator="cpu").test(
-        lightning_model, dataloaders=test_loader, ckpt_path="best"
+        lightning_model, dataloaders=test_loader, ckpt_path=checkpoint_callback.best_model_path
     )
     x = evaluate(
         lightning_model.model.to("cuda"), dataset, split_idx, eval_func, criterion, args
