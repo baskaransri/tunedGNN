@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GATConv, GCNConv, SAGEConv
-
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
 class MPNNs(torch.nn.Module):
     def __init__(
@@ -126,6 +126,39 @@ class MPNNs(torch.nn.Module):
 
         return x
 
+    #Assumes x is already multiplied by D^{-1/2}AD^{-1/2}
+    def precomputed_forward(self, x, edge_index):
+
+        x = F.dropout(x, p=self.in_drop, training=self.training)
+
+        x_final = 0
+
+        for i, local_conv in enumerate(self.local_convs):
+            #we have precomputed the first message passing
+            if i == 0:  
+                #normalised_edge_index, normalised_edge_weight = gcn_norm(
+                #        edge_index, None, x.size(local_conv.node_dim),
+                #        local_conv.improved, local_conv.add_self_loops, local_conv.flow, x.dtype)
+
+                #x = local_conv.propagate(normalised_edge_index, x=x, edge_weight=normalised_edge_weight)
+                x = local_conv.lin(x)
+                if local_conv.bias is not None:
+                    x = x + local_conv.bias
+                #x = local_conv.forward(x, edge_index)
+            else:
+                x = local_conv(x, edge_index)
+            if self.bn:
+                x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            if self.jk:
+                x_final = x_final + x
+            else:
+                x_final = x
+
+        x = self.pred_local(x_final)
+
+        return x
     def linear_forward(self, x, edge_index):
 
         x = F.dropout(x, p=self.in_drop, training=self.training)

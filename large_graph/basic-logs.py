@@ -19,7 +19,12 @@ import torchmetrics as tm
 from torch_geometric.nn.models import GCN
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.utilities import grad_norm
 
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
+
+from tqdm import tqdm
+import pandas as pd
 
 from lg_parse import parse_method, parser_add_main_args
 import sys
@@ -39,6 +44,23 @@ def fix_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+def aggregate_grad_layers(batch_norm_dict):
+    d = batch_norm_dict
+
+    gstr = "grad_2.0_norm"
+    res = {}
+    res["norm_total"] = d[gstr + "_total"]
+    # List layer numbers
+    constr = gstr + "/convs."
+    layer_nums = [
+        k.split(constr)[1].split(".")[0] for k in d.keys() if (k.startswith(constr))
+    ]
+    layer_nums = list(set(map(int, layer_nums)))
+    for l in layer_nums:
+        relevant_keys = [k for k in d.keys() if k.startswith(constr + str(l))]
+        layer_norm = sqrt(sum([d[k] ** 2 for k in relevant_keys]))
+        res["l" + str(l) + "_total"] = layer_norm
+    return res
 
 ### Parse args ###
 parser = argparse.ArgumentParser(
@@ -104,10 +126,13 @@ eval_func = eval_acc
 eval_obj = tm.Accuracy(task="multiclass", num_classes=c).to(device)
 logger = Logger(args.runs, args)
 
+cv_coeff = 0.1
 
 model.train()
 print("MODEL:", model)
 
+
+pd_logs = []
 ### Training loop ###
 for run in range(args.runs):
     split_idx = split_idx_lst[run]
@@ -129,6 +154,10 @@ for run in range(args.runs):
     valid_data = data.clone()
     train_data.y[not_train_mask] = 0
     valid_data.y[not_valid_mask] = 0
+
+    #precompute first mult:
+    train_data.DADx = model.local_convs[0].propagate(train_data.edge_index, x=train_data.x, edge_weight= None)
+
 
     train_data.to(device)
 
@@ -162,6 +191,9 @@ for run in range(args.runs):
     valid_acc = train_acc.clone()
     test_acc = train_acc.clone()
 
+    #for tqdm visualisation:
+    train_len = len(train_loader)
+
     for epoch in range(args.epochs):
 
         model.train()
@@ -171,15 +203,88 @@ for run in range(args.runs):
         # torch.all(data.x[batch.n_id] == batch.x)
         # So we expect that
         # out1[batch.n_id] == out
-
-        for batch in train_loader:
-            # print(f"BASKY: {batch.input_id.shape}")
-            optimizer.zero_grad()
-            out = model(batch.x, batch.edge_index)
+        # Also:
+        # torch.all(batch.x[:split_size] == data.x[split_idx["train"][batch.input_id]]) and
+        # torch.all(batch.x[:split_size] == data.x[train_loader.input_nodes[batch.input_id]])
+        # that is: input_ids are indexed into the seed nodes.
+        
+        for batch_idx, batch in tqdm(enumerate(train_loader), leave=False, total=train_len):
+            # Some properties for indexing:
             split_size = batch.input_id.shape[0]
-            loss = criterion(out[:split_size], batch.y[:split_size])
+            global_input_nodes = split_idx['train'][batch.input_id]
+            #we have that batch.x[:split_size] == train_data.x[global_input_nodes]
 
+            #We now calculate the norms of three sets of gradients:
+            # 1) minibatch loss - fullbatch loss gradient norms
+            # 2) cv minibatch loss - fullbatch loss gradient norms
+            # 3) fullbatch gradient norms (for normalization)
+            # We log these and then finally step our optimizer forward.
+
+            #(1)
+            optimizer.zero_grad()
+
+            out = model(batch.x, batch.edge_index)
+            minibatch_loss = criterion(out[:split_size], batch.y[:split_size])
+
+            full_out = model(train_data.x, train_data.edge_index)
+            fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
+
+            loss = minibatch_loss - fullbatch_loss
             loss.backward()
+
+            norms = grad_norm(model, norm_type=2)
+            dbatch_minus_full = aggregate_grad_layers(norms)
+
+            #(2)
+            optimizer.zero_grad()
+
+            local_conv = model.local_convs[0]
+            normalised_edge_index, normalised_edge_weight = gcn_norm(
+                    batch.edge_index, None, batch.x.size(local_conv.node_dim),
+                    local_conv.improved, local_conv.add_self_loops, local_conv.flow, batch.x.dtype)
+
+            dadx = local_conv.propagate(normalised_edge_index, 
+                                        x=batch.x,
+                                        edge_weight=normalised_edge_weight)
+            outp = model.precomputed_forward(dadx, batch.edge_index)
+
+
+            print(f"DEBUG: {(outp-out).norm()}")
+            out = model.precomputed_forward(batch.DADx, batch.edge_index)
+            minibatch_with_precomp_loss = criterion(outp[:split_size], batch.y[:split_size])
+
+            full_out = model(train_data.x, train_data.edge_index)
+            fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
+
+            loss = minibatch_with_precomp_loss - fullbatch_loss
+            loss.backward()
+
+            norms = grad_norm(model, norm_type=2)
+            dprecomp_minus_full = aggregate_grad_layers(norms)
+
+
+            #(3)
+            optimizer.zero_grad()
+            full_out = model(train_data.x, train_data.edge_index)
+            fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
+
+            loss = fullbatch_loss
+            loss.backward()
+
+            norms = grad_norm(model, norm_type=2)
+            dfull = aggregate_grad_layers(norms)
+
+            #log
+            #compute stats:
+            dlmc_rel = {k: (dbatch_minus_full[k] / dfull[k]).item() for k in dfull.keys()}
+            dlmc_rel_precomp = {k: (dprecomp_minus_full[k] / dfull[k]).item() for k in dfull.keys()}
+            #relabel:
+            dlmc_rel = {f"lmc_rel_err/{k}": v for k, v in dlmc_rel.items()}
+            dlmc_rel_precomp = {f"lmc_rel_err_precomp/{k}": v for k, v in dlmc_rel_precomp.items()}
+            gen_dict = {"batch_idx": batch_idx, "epoch": epoch, "step": batch_idx + epoch * train_len}
+            pd_logs.append( dlmc_rel | dlmc_rel_precomp | gen_dict )
+
+            #Now step        
             train_acc.update(out[:split_size], batch.y[:split_size])
             optimizer.step()
 
@@ -234,3 +339,5 @@ for run in range(args.runs):
     results = logger.print_statistics()
     ### Save results ###
     save_result(args, results)
+
+pd.DataFrame(pd_logs).to_csv('lightning_logs/metrics.csv')
