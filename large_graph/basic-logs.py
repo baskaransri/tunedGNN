@@ -90,6 +90,9 @@ dataset.label = dataset.label.to(device)
 
 #split_idx_lst = [dataset.load_fixed_splits() for _ in range(args.runs)]
 
+### Moar accuracy
+#dataset.graph['node_feat'] = dataset.graph['node_feat'].double()
+
 ### Basic information of datasets ###
 n = dataset.graph["num_nodes"]
 e = dataset.graph["edge_index"].shape[1]
@@ -118,6 +121,7 @@ data = data.to(device)
 
 ### Load method ###
 model = parse_method(args, n, c, d, device)
+#model = model.double()
 # model = GCN(-1, args.hidden_channels, args.local_layers, c).to(device)
 
 
@@ -180,6 +184,7 @@ for run in range(args.runs):
         num_workers=2,
         pin_memory=True,
     )
+    """
     valid_loader = NeighborLoader(
         valid_data,
         input_nodes=split_idx["valid"],
@@ -194,6 +199,7 @@ for run in range(args.runs):
         batch_size=data.num_nodes,
         num_workers=2,
     )
+    """
 
 
     train_acc = tm.Accuracy(task="multiclass", num_classes=c).to(device)
@@ -240,8 +246,8 @@ for run in range(args.runs):
 
                 loss = minibatch_loss - fullbatch_loss
                 print(f"fb vs minibatch loss: {loss}")
+                print(f"loss dtype: {loss.dtype}")
                 loss.backward()
-                breakpoint()
 
 
                 norms = grad_norm(model, norm_type=2)
@@ -271,6 +277,8 @@ for run in range(args.runs):
 
                 loss = fullbatch_loss
                 loss.backward()
+                
+                train_acc.update(out[global_input_nodes], train_data.y[global_input_nodes])
 
                 norms = grad_norm(model, norm_type=2)
                 dfull = aggregate_grad_layers(norms)
@@ -291,16 +299,21 @@ for run in range(args.runs):
                 #out = model.precomputed_forward(batch.DADx, batch.edge_index)
                 #loss = criterion(out[:split_size], batch.y[:split_size])
 
-                out = model(batch.x, batch.edge_index)
-                loss = criterion(out[:split_size], batch.y[:split_size])
+                #out = model(batch.x, batch.edge_index)
+                #loss = criterion(out[:split_size], batch.y[:split_size])
+
+                out = model(train_data.x, train_data.edge_index)
+                loss = criterion(out[global_input_nodes], train_data.y[global_input_nodes])
+
                 #loss = minibatch_loss
 
                 loss.backward()
+                train_acc.update(out[global_input_nodes], train_data.y[global_input_nodes])
+                
 
             #Now step        
-            train_acc.update(out[:split_size], batch.y[:split_size])
+            #train_acc.update(out[:split_size], batch.y[:split_size])
             optimizer.step()
-            del batch
 
         """
         for valid_batch in valid_loader:
