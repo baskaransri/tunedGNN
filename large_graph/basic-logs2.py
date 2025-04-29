@@ -88,7 +88,6 @@ if len(dataset.label.shape) == 1:
     dataset.label = dataset.label.unsqueeze(1)
 dataset.label = dataset.label.to(device)
 
-split_idx_lst = [dataset.load_fixed_splits() for _ in range(args.runs)]
 
 ### Basic information of datasets ###
 n = dataset.graph["num_nodes"]
@@ -135,7 +134,8 @@ print("MODEL:", model)
 pd_logs = []
 ### Training loop ###
 for run in range(args.runs):
-    split_idx = split_idx_lst[run]
+
+    split_idx = dataset.load_fixed_splits() if hasattr(dataset, 'load_fixed_splits') else dataset.get_idx_split() 
     train_idx = split_idx["train"].to(device)
     model.reset_parameters()
     optimizer = torch.optim.Adam(
@@ -174,7 +174,7 @@ for run in range(args.runs):
     train_loader = NeighborLoader(
         train_data,
         input_nodes=split_idx["train"],
-        num_neighbors=[5, 5, 5],
+        num_neighbors=[data.num_nodes] * 100, #[5, 5, 5],
         batch_size=4000,
         #num_neighbors=[data.num_nodes] * 100,
         #batch_size=data.num_nodes,
@@ -225,11 +225,11 @@ for run in range(args.runs):
 
             optimizer.zero_grad()
 
-            out = model.precomputed_forward(batch.DADx, batch.edge_index)
-            loss = criterion(out[:split_size], batch.y[:split_size])
+            #out = model.precomputed_forward(batch.DADx, batch.edge_index)
+            #loss = criterion(out[:split_size], batch.y[:split_size])
 
-            #out = model(batch.x, batch.edge_index)
-            #minibatch_loss = criterion(out[:split_size], batch.y[:split_size])
+            out = model(batch.x, batch.edge_index)
+            loss = criterion(out[:split_size], batch.y[:split_size])
             #loss = minibatch_loss
 
             loss.backward()
@@ -248,7 +248,7 @@ for run in range(args.runs):
             train_acc.compute().detach(),
             valid_acc.compute().detach(),
             test_acc.compute().detach(),
-            (),
+            0,
             (),
         )
 

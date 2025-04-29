@@ -10,7 +10,9 @@ from os import path
 import gdown
 import scipy
 
-from data_utils import dataset_drive_url
+from torch_geometric.datasets import Planetoid
+
+from data_utils import dataset_drive_url, rand_train_test_idx
 
 
 class NCDataset(object):
@@ -43,14 +45,29 @@ class NCDataset(object):
         self.graph = {}
         self.label = None
 
-    def get_idx_split(self, split_type='random', train_prop=.6, valid_prop=.2, label_num_per_class=20):
+    #def get_idx_split(self, split_type='random', train_prop=.6, valid_prop=.2, label_num_per_class=20):
         """
         train_prop: The proportion of dataset for train split. Between 0 and 1.
         valid_prop: The proportion of dataset for validation split. Between 0 and 1.
         """
-        split_idx = None
-        return split_idx
+        #split_idx = None
+        #return split_idx
 
+    def get_idx_split(self, split_type='random', train_prop=.5, valid_prop=.25):
+        """
+        train_prop: The proportion of dataset for train split. Between 0 and 1.
+        valid_prop: The proportion of dataset for validation split. Between 0 and 1.
+        """
+
+        if split_type == 'random':
+            ignore_negative = False if self.name == 'ogbn-proteins' else True
+            train_idx, valid_idx, test_idx = rand_train_test_idx(
+                self.label, train_prop=train_prop, valid_prop=valid_prop, ignore_negative=ignore_negative)
+            split_idx = {'train': train_idx,
+                         'valid': valid_idx,
+                         'test': test_idx}
+
+        return split_idx
     def __getitem__(self, idx):
         assert idx == 0, 'This dataset has only one graph'
         return self.graph, self.label
@@ -79,8 +96,39 @@ def load_dataset(data_dir, dataname, sub_dataname=''):
         dataset = load_ogb_dataset(data_dir, dataname)
     elif dataname == 'pokec':
         dataset = load_pokec_mat(data_dir)
+    elif dataname in ('cora', 'citeseer', 'pubmed'):
+        dataset = load_planetoid_dataset(data_dir, dataname)
     else:
         raise ValueError('Invalid dataname')
+    return dataset
+
+def load_planetoid_dataset(data_dir, name, no_feat_norm=True):
+    if not no_feat_norm:
+        transform = T.NormalizeFeatures()
+        torch_dataset = Planetoid(root=f'{data_dir}/Planetoid',
+                                  name=name, transform=transform)
+    else:
+        torch_dataset = Planetoid(root=f'{data_dir}/Planetoid', name=name)
+    data = torch_dataset[0]
+
+    edge_index = data.edge_index
+    node_feat = data.x
+    label = data.y
+    num_nodes = data.num_nodes
+    print(f"Num nodes: {num_nodes}")
+
+    dataset = NCDataset(name)
+
+    dataset.train_idx = torch.where(data.train_mask)[0]
+    dataset.valid_idx = torch.where(data.val_mask)[0]
+    dataset.test_idx = torch.where(data.test_mask)[0]
+
+    dataset.graph = {'edge_index': edge_index,
+                     'node_feat': node_feat,
+                     'edge_feat': None,
+                     'num_nodes': num_nodes}
+    dataset.label = label
+
     return dataset
 
 
