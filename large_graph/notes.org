@@ -1,0 +1,2 @@
+Checklist for checking correctness:
++ [ ] have you disabled dropout?
