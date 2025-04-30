@@ -22,6 +22,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.utilities import grad_norm
 
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
+import torch_geometric.transforms as T
 
 from tqdm import tqdm
 import pandas as pd
@@ -117,6 +118,10 @@ data = Data(
     y=dataset.label.squeeze(1),
     edge_index=dataset.graph["edge_index"],
 )
+
+#SparseTensor has much better determinism
+#This creates the 'adj_t' property
+#data = T.ToSparseTensor(remove_edge_index=False)(data)
 data = data.to(device)
 
 ### Load method ###
@@ -244,12 +249,14 @@ for run in range(args.runs):
                 full_out = model(train_data.x, train_data.edge_index)
                 fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
 
+                #we have that batch.x[:split_size] == train_data.x[global_input_nodes]
+                print(f"DEBUG: {(out[:split_size] - full_out[global_input_nodes]).norm()}, {out[:split_size].norm()}")
                 loss = minibatch_loss - fullbatch_loss
-                print(f"fb vs minibatch loss: {loss}")
+                print(f"fb vs minibatch loss: {loss}, fb loss: {fullbatch_loss}")
                 print(f"loss dtype: {loss.dtype}")
+                print(f"DEBUG: { torch.all(sort_edge_index(batch.n_id.to(device)[batch.edge_index]) == sort_edge_index(data.edge_index)) }")
+
                 loss.backward()
-
-
                 norms = grad_norm(model, norm_type=2)
                 dbatch_minus_full = aggregate_grad_layers(norms)
 
