@@ -182,10 +182,10 @@ for run in range(args.runs):
     train_loader = NeighborLoader(
         train_data,
         input_nodes=split_idx["train"],
-        #num_neighbors=[5, 5, 5],
-        #batch_size=4000,
-        num_neighbors=[data.num_nodes] * 100,
-        batch_size=data.num_nodes,
+        num_neighbors=[5, 5, 5],
+        batch_size=400,
+        #num_neighbors=[data.num_nodes] * 100,
+        #batch_size=data.num_nodes,
         num_workers=2,
         pin_memory=True,
     )
@@ -250,11 +250,13 @@ for run in range(args.runs):
                 fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
 
                 #we have that batch.x[:split_size] == train_data.x[global_input_nodes]
-                print(f"DEBUG: {(out[:split_size] - full_out[global_input_nodes]).norm()}, {out[:split_size].norm()}")
+                #print(f"DEBUG: {(out[:split_size] - full_out[global_input_nodes]).norm()}, {out[:split_size].norm()}")
                 loss = minibatch_loss - fullbatch_loss
-                print(f"fb vs minibatch loss: {loss}, fb loss: {fullbatch_loss}")
-                print(f"loss dtype: {loss.dtype}")
-                print(f"DEBUG: { torch.all(sort_edge_index(batch.n_id.to(device)[batch.edge_index]) == sort_edge_index(data.edge_index)) }")
+                fbvsminiloss = loss.item()
+                fbvsminiout = (out[:split_size] - full_out[global_input_nodes]).norm().item()
+                #print(f"fb vs minibatch loss: {loss}, fb loss: {fullbatch_loss}")
+                #print(f"loss dtype: {loss.dtype}")
+                #print(f"DEBUG: { torch.all(sort_edge_index(batch.n_id.to(device)[batch.edge_index]) == sort_edge_index(data.edge_index)) }")
 
                 loss.backward()
                 norms = grad_norm(model, norm_type=2)
@@ -270,10 +272,28 @@ for run in range(args.runs):
                 fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
 
                 loss = minibatch_with_precomp_loss - fullbatch_loss
+                fbvsprecompout = (outp[:split_size] - full_out[global_input_nodes]).norm().item()
+                print(f"fb vs precomp loss: {loss}, fb vs minibatch loss: {fbvsminiloss}, ratio: {loss/fbvsminiloss} , fb loss: {fullbatch_loss}")
+                print(f"fb vs precomp top layer diff: {fbvsprecompout}, fb vs minibatch diff: {fbvsminiout}, ratio:{fbvsprecompout/fbvsminiout} , fb norm:{full_out[global_input_nodes].norm()}")
                 loss.backward()
 
                 norms = grad_norm(model, norm_type=2)
                 dprecomp_minus_full = aggregate_grad_layers(norms)
+
+                #(2b)
+                outl1 = model.forward_l1(batch.x, batch.edge_index)
+                outpl1 = model.precomputed_forward_l1(batch.DADx, ())
+                full_out_l1 = model.forward_l1(train_data.x, train_data.edge_index)
+                fbvsprecompout = (outpl1[:split_size] - full_out_l1[global_input_nodes]).norm().item()
+                fbvsminiout = (outl1[:split_size] - full_out_l1[global_input_nodes]).norm().item()
+                print(f"LAYER 1: fb vs precomp: {fbvsprecompout}, fb vs mini: {fbvsminiout}, ratio: {fbvsprecompout/fbvsminiout}, norm: {full_out_l1.norm()}")
+
+                outl2 = model.forward_l2(batch.x, batch.edge_index)
+                outpl2 = model.precomputed_forward_l2(batch.DADx, batch.edge_index)
+                full_out_l2 = model.forward_l2(train_data.x, train_data.edge_index)
+                fbvsprecompout = (outpl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
+                fbvsminiout = (outl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
+                print(f"LAYER 2: fb vs precomp: {fbvsprecompout}, fb vs mini: {fbvsminiout}, ratio: {fbvsprecompout/fbvsminiout}, norm: {full_out_l1.norm()}")
 
 
                 #(3)
