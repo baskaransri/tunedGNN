@@ -101,7 +101,6 @@ class MPNNs(torch.nn.Module):
         self.pred_local.reset_parameters()
 
     def forward(self, x, edge_index):
-
         x = F.dropout(x, p=self.in_drop, training=self.training)
 
         x_final = 0
@@ -111,6 +110,106 @@ class MPNNs(torch.nn.Module):
                 x = self.pre_lns[i](x)
             if self.res:
                 x = local_conv(x, edge_index) + self.lins[i](x)
+            else:
+                x = local_conv(x, edge_index)
+            if self.bn:
+                x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            if self.jk:
+                x_final = x_final + x
+            else:
+                x_final = x
+
+        x = self.pred_local(x_final)
+
+        return x
+
+
+    def precomputed_forward_l1(self, x, edge_index):
+        x = F.dropout(x, p=self.in_drop, training=self.training)
+
+        for i, local_conv in enumerate(self.local_convs):
+            if i == 0:  
+                x = local_conv.lin(x)
+                if local_conv.bias is not None:
+                    x = x + local_conv.bias
+            x = F.relu(x)
+        return x
+
+    def forward_l1(self, x, edge_index):
+        x = F.dropout(x, p=self.in_drop, training=self.training)
+
+        for i, local_conv in enumerate(self.local_convs):
+            if i==0:
+                if self.pre_ln:
+                    x = self.pre_lns[i](x)
+                if self.res:
+                    x = local_conv(x, edge_index) + self.lins[i](x)
+                else:
+                    x = local_conv(x, edge_index)
+                if self.bn:
+                    x = self.bns[i](x)
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+
+        #x = self.pred_local(x)
+
+        return x
+
+    def precomputed_forward_l2(self, x, edge_index):
+        x = F.dropout(x, p=self.in_drop, training=self.training)
+
+        for i, local_conv in enumerate(self.local_convs):
+            if i == 0:  
+                x = local_conv.lin(x)
+                if local_conv.bias is not None:
+                    x = x + local_conv.bias
+            elif i == 1:
+                x = local_conv(x, edge_index)
+            x = F.relu(x)
+        return x
+
+    def forward_l2(self, x, edge_index):
+        x = F.dropout(x, p=self.in_drop, training=self.training)
+
+        for i, local_conv in enumerate(self.local_convs):
+            if i<2:
+                if self.pre_ln:
+                    x = self.pre_lns[i](x)
+                if self.res:
+                    x = local_conv(x, edge_index) + self.lins[i](x)
+                else:
+                    x = local_conv(x, edge_index)
+                if self.bn:
+                    x = self.bns[i](x)
+                x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+
+        #x = self.pred_local(x)
+
+        return x
+
+    def weightless_conv(self, x, edge_index):
+        local_conv = self.local_convs[0]
+        normalised_edge_index, normalised_edge_weight = gcn_norm(
+                edge_index, None, x.size(local_conv.node_dim),
+                local_conv.improved, local_conv.add_self_loops, local_conv.flow, x.dtype)
+        return local_conv.propagate(normalised_edge_index, x=x, edge_weight=normalised_edge_weight)
+
+
+        for i, local_conv in enumerate(self.local_convs):
+            #we have precomputed the first message passing
+            if i == 0:  
+                #normalised_edge_index, normalised_edge_weight = gcn_norm(
+                #        edge_index, None, x.size(local_conv.node_dim),
+                #        local_conv.improved, local_conv.add_self_loops, local_conv.flow, x.dtype)
+
+                #x = local_conv.propagate(normalised_edge_index, x=x, edge_weight=normalised_edge_weight)
+                x = local_conv.lin(x)
+                if local_conv.bias is not None:
+                    x = x + local_conv.bias
+                #x = local_conv.forward(x, edge_index)
             else:
                 x = local_conv(x, edge_index)
             if self.bn:

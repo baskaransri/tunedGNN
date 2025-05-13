@@ -22,6 +22,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.utilities import grad_norm
 
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
+import torch_geometric.transforms as T
 
 from tqdm import tqdm
 import pandas as pd
@@ -88,7 +89,10 @@ if len(dataset.label.shape) == 1:
     dataset.label = dataset.label.unsqueeze(1)
 dataset.label = dataset.label.to(device)
 
-split_idx_lst = [dataset.load_fixed_splits() for _ in range(args.runs)]
+#split_idx_lst = [dataset.load_fixed_splits() for _ in range(args.runs)]
+
+### Moar accuracy
+#dataset.graph['node_feat'] = dataset.graph['node_feat'].double()
 
 ### Basic information of datasets ###
 n = dataset.graph["num_nodes"]
@@ -114,10 +118,15 @@ data = Data(
     y=dataset.label.squeeze(1),
     edge_index=dataset.graph["edge_index"],
 )
+
+#SparseTensor has much better determinism
+#This creates the 'adj_t' property
+#data = T.ToSparseTensor(remove_edge_index=False)(data)
 data = data.to(device)
 
 ### Load method ###
 model = parse_method(args, n, c, d, device)
+#model = model.double()
 # model = GCN(-1, args.hidden_channels, args.local_layers, c).to(device)
 
 
@@ -135,7 +144,8 @@ print("MODEL:", model)
 pd_logs = []
 ### Training loop ###
 for run in range(args.runs):
-    split_idx = split_idx_lst[run]
+    split_idx = dataset.load_fixed_splits() if hasattr(dataset, 'load_fixed_splits') else dataset.get_idx_split() 
+    #split_idx = split_idx_lst[run]
     train_idx = split_idx["train"].to(device)
     model.reset_parameters()
     optimizer = torch.optim.Adam(
@@ -156,16 +166,16 @@ for run in range(args.runs):
     valid_data.y[not_valid_mask] = 0
 
     #precompute first mult:
-
-    local_conv = model.local_convs[0]
     normalised_edge_index, normalised_edge_weight = gcn_norm(
             train_data.edge_index, None, train_data.x.size(model.local_convs[0].node_dim),
             model.local_convs[0].improved, model.local_convs[0].add_self_loops, model.local_convs[0].flow, train_data.x.dtype)
 
-    train_data.DADx = local_conv.propagate(normalised_edge_index, 
+    train_data.DADx = model.local_convs[0].propagate(normalised_edge_index, 
                                 x=train_data.x,
-                                edge_weight=normalised_edge_weight)
-
+                                edge_weight=normalised_edge_weight).detach()
+    del normalised_edge_index
+    del normalised_edge_weight
+    torch.cuda.empty_cache()
 
     train_data.to(device)
 
@@ -173,12 +183,13 @@ for run in range(args.runs):
         train_data,
         input_nodes=split_idx["train"],
         num_neighbors=[5, 5, 5],
-        batch_size=4000,
+        batch_size=400,
         #num_neighbors=[data.num_nodes] * 100,
         #batch_size=data.num_nodes,
         num_workers=2,
         pin_memory=True,
     )
+    """
     valid_loader = NeighborLoader(
         valid_data,
         input_nodes=split_idx["valid"],
@@ -193,6 +204,7 @@ for run in range(args.runs):
         batch_size=data.num_nodes,
         num_workers=2,
     )
+    """
 
 
     train_acc = tm.Accuracy(task="multiclass", num_classes=c).to(device)
@@ -221,7 +233,7 @@ for run in range(args.runs):
             global_input_nodes = split_idx['train'][batch.input_id]
             #we have that batch.x[:split_size] == train_data.x[global_input_nodes]
 
-            if False:
+            if True:
                 #We now calculate the norms of three sets of gradients:
                 # 1) minibatch loss - fullbatch loss gradient norms
                 # 2) cv minibatch loss - fullbatch loss gradient norms
@@ -237,9 +249,16 @@ for run in range(args.runs):
                 full_out = model(train_data.x, train_data.edge_index)
                 fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
 
+                #we have that batch.x[:split_size] == train_data.x[global_input_nodes]
+                #print(f"DEBUG: {(out[:split_size] - full_out[global_input_nodes]).norm()}, {out[:split_size].norm()}")
                 loss = minibatch_loss - fullbatch_loss
-                loss.backward()
+                fbvsminiloss = loss.item()
+                fbvsminiout = (out[:split_size] - full_out[global_input_nodes]).norm().item()
+                #print(f"fb vs minibatch loss: {loss}, fb loss: {fullbatch_loss}")
+                #print(f"loss dtype: {loss.dtype}")
+                #print(f"DEBUG: { torch.all(sort_edge_index(batch.n_id.to(device)[batch.edge_index]) == sort_edge_index(data.edge_index)) }")
 
+                loss.backward()
                 norms = grad_norm(model, norm_type=2)
                 dbatch_minus_full = aggregate_grad_layers(norms)
 
@@ -253,19 +272,40 @@ for run in range(args.runs):
                 fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
 
                 loss = minibatch_with_precomp_loss - fullbatch_loss
+                fbvsprecompout = (outp[:split_size] - full_out[global_input_nodes]).norm().item()
+                print(f"fb vs precomp loss: {loss}, fb vs minibatch loss: {fbvsminiloss}, ratio: {loss/fbvsminiloss} , fb loss: {fullbatch_loss}")
+                print(f"fb vs precomp top layer diff: {fbvsprecompout}, fb vs minibatch diff: {fbvsminiout}, ratio:{fbvsprecompout/fbvsminiout} , fb norm:{full_out[global_input_nodes].norm()}")
                 loss.backward()
 
                 norms = grad_norm(model, norm_type=2)
                 dprecomp_minus_full = aggregate_grad_layers(norms)
 
+                #(2b)
+                outl1 = model.forward_l1(batch.x, batch.edge_index)
+                outpl1 = model.precomputed_forward_l1(batch.DADx, ())
+                full_out_l1 = model.forward_l1(train_data.x, train_data.edge_index)
+                fbvsprecompout = (outpl1[:split_size] - full_out_l1[global_input_nodes]).norm().item()
+                fbvsminiout = (outl1[:split_size] - full_out_l1[global_input_nodes]).norm().item()
+                print(f"LAYER 1: fb vs precomp: {fbvsprecompout}, fb vs mini: {fbvsminiout}, ratio: {fbvsprecompout/fbvsminiout}, norm: {full_out_l1.norm()}")
+
+                outl2 = model.forward_l2(batch.x, batch.edge_index)
+                outpl2 = model.precomputed_forward_l2(batch.DADx, batch.edge_index)
+                full_out_l2 = model.forward_l2(train_data.x, train_data.edge_index)
+                fbvsprecompout = (outpl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
+                fbvsminiout = (outl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
+                print(f"LAYER 2: fb vs precomp: {fbvsprecompout}, fb vs mini: {fbvsminiout}, ratio: {fbvsprecompout/fbvsminiout}, norm: {full_out_l1.norm()}")
+
 
                 #(3)
                 optimizer.zero_grad()
                 full_out = model(train_data.x, train_data.edge_index)
+                out = full_out
                 fullbatch_loss = criterion(full_out[global_input_nodes], train_data.y[global_input_nodes])
 
                 loss = fullbatch_loss
                 loss.backward()
+                
+                train_acc.update(out[global_input_nodes], train_data.y[global_input_nodes])
 
                 norms = grad_norm(model, norm_type=2)
                 dfull = aggregate_grad_layers(norms)
@@ -283,20 +323,26 @@ for run in range(args.runs):
             else:
                 optimizer.zero_grad()
 
-                out = model.precomputed_forward(batch.DADx, batch.edge_index)
-                minibatch_with_precomp_loss = criterion(out[:split_size], batch.y[:split_size])
-                loss = minibatch_with_precomp_loss
+                #out = model.precomputed_forward(batch.DADx, batch.edge_index)
+                #loss = criterion(out[:split_size], batch.y[:split_size])
 
                 #out = model(batch.x, batch.edge_index)
-                #minibatch_loss = criterion(out[:split_size], batch.y[:split_size])
+                #loss = criterion(out[:split_size], batch.y[:split_size])
+
+                out = model(train_data.x, train_data.edge_index)
+                loss = criterion(out[global_input_nodes], train_data.y[global_input_nodes])
+
                 #loss = minibatch_loss
 
                 loss.backward()
+                train_acc.update(out[global_input_nodes], train_data.y[global_input_nodes])
+                
 
             #Now step        
-            train_acc.update(out[:split_size], batch.y[:split_size])
+            #train_acc.update(out[:split_size], batch.y[:split_size])
             optimizer.step()
 
+        """
         for valid_batch in valid_loader:
             valid_out = model(valid_batch.x, valid_batch.edge_index)
             valid_split_size = valid_batch.input_id.shape[0]
@@ -305,7 +351,8 @@ for run in range(args.runs):
             )
             valid_loss = criterion(
                 valid_out[:valid_split_size], valid_batch.y[:valid_split_size]
-            )
+            ).detach()
+            del valid_batch
 
         for test_batch in test_loader:
             test_out = model(test_batch.x, test_batch.edge_index)
@@ -313,6 +360,14 @@ for run in range(args.runs):
             test_acc.update(
                 test_out[:test_split_size], test_batch.y[:test_split_size]
             )
+            del test_batch
+        """
+
+        out = model(dataset.graph['node_feat'], dataset.graph['edge_index'])
+        valid_loss = criterion(out[split_idx['valid']], dataset.label[split_idx['valid']].squeeze(1))
+        valid_acc.update(out[split_idx['valid']], dataset.label[split_idx['valid']].squeeze(1))
+        test_acc.update(out[split_idx['test']], dataset.label[split_idx['test']].squeeze(1))
+
 
         result = (
             train_acc.compute().detach(),
