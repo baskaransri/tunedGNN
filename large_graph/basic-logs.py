@@ -295,6 +295,13 @@ for run in range(args.runs):
                 fbvsminiout = (outl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
                 print(f"LAYER 2: fb vs precomp: {fbvsprecompout}, fb vs mini: {fbvsminiout}, ratio: {fbvsprecompout/fbvsminiout}, norm: {full_out_l1.norm()}")
 
+                outl2 = model.forward_weightless_l2(batch.x, batch.edge_index)
+                outpl2 = model.precomputed_weightless_forward_l2(batch.DADx, batch.edge_index)
+                full_out_l2 = model.forward_weightless_l2(train_data.x, train_data.edge_index)
+                fbvsprecompout = (outpl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
+                fbvsminiout = (outl2[:split_size] - full_out_l2[global_input_nodes]).norm().item()
+                print(f"WEIGHTLESS LAYER 2: fb vs precomp: {fbvsprecompout}, fb vs mini: {fbvsminiout}, ratio: {fbvsprecompout/fbvsminiout}, norm: {full_out_l1.norm()}")
+
 
                 #(3)
                 optimizer.zero_grad()

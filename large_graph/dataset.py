@@ -116,7 +116,8 @@ def load_dataset(data_dir, dataname, sub_dataname=""):
 def construct_csbm(N=2000, expected_degree=5, outgroup_ingroup_ratio = 0.7):
     c_in = expected_degree/N
     c_out = c_in * outgroup_ingroup_ratio
-    data = csbm(N, 4, N//2, c_in, c_out, 100)
+    mu = N * 100
+    data = csbm(N, 4, N//2, c_in, c_out, mu)
     dataset = NCDataset("csbm")
     dataset.graph["edge_index"] = data.edge_index
     dataset.graph["node_feat"] = data.x
