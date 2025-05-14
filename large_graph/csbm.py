@@ -33,4 +33,4 @@ def csbm(graph_size, feat_dim, num_labels, c_in, c_out, mu):
     B_unnoised = sqrt(mu / graph_size) * th.outer(labels, u)
     B = B_unnoised + th.randn_like(B_unnoised) / sqrt(feat_dim)
 
-    return Data(edge_index=edge_index, x=B, x_clean=B_unnoised, y=labels)
+    return Data(edge_index=edge_index, x=B, x_clean=B_unnoised, y=labels.long())

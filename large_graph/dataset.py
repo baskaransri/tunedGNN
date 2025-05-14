@@ -114,7 +114,13 @@ def load_dataset(data_dir, dataname, sub_dataname=""):
     return dataset
 
 def construct_csbm():
-    return csbm(1000, 4, 300, 0.5, 0.1, 0.1)
+    data = csbm(1000, 4, 300, 0.5, 0.1, 0.1)
+    dataset = NCDataset("csbm")
+    dataset.graph["edge_index"] = data.edge_index
+    dataset.graph["node_feat"] = data.x
+    dataset.graph["num_nodes"] = data.num_nodes
+    dataset.label = data.y
+    return dataset
 
 def load_reddit_dataset(data_dir, nclass=5):
     filename = "reddit"

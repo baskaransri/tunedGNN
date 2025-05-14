@@ -97,7 +97,7 @@ dataset.label = dataset.label.to(device)
 ### Basic information of datasets ###
 n = dataset.graph["num_nodes"]
 e = dataset.graph["edge_index"].shape[1]
-c = max(dataset.label.max().item() + 1, dataset.label.shape[1])
+c = int(max(dataset.label.max().item() + 1, dataset.label.shape[1]))
 d = dataset.graph["node_feat"].shape[1]
 
 print(
