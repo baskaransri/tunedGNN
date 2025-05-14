@@ -15,6 +15,8 @@ from torch_geometric.datasets import Planetoid
 
 from data_utils import dataset_drive_url, rand_train_test_idx
 
+from csbm import csbm
+
 
 class NCDataset(object):
     def __init__(self, name):
@@ -105,10 +107,14 @@ def load_dataset(data_dir, dataname, sub_dataname=""):
         dataset = load_pokec_mat(data_dir)
     elif dataname in ('cora', 'citeseer', 'pubmed'):
         dataset = load_planetoid_dataset(data_dir, dataname)
+    elif dataname == "csbm":
+        dataset = construct_csbm()
     else:
         raise ValueError("Invalid dataname")
     return dataset
 
+def construct_csbm():
+    return csbm(1000, 4, 300, 0.5, 0.1, 0.1)
 
 def load_reddit_dataset(data_dir, nclass=5):
     filename = "reddit"
@@ -119,7 +125,7 @@ def load_reddit_dataset(data_dir, nclass=5):
     dataset.graph["node_feat"] = torch.as_tensor(reddit_dataset.x)
     dataset.graph["num_nodes"] = reddit_dataset.x.shape[0]
     dataset.label = reddit_dataset.y
-    dataset.load_fixed_splits = {
+    dataset.load_fixed_splits = lambda: {
         "train": reddit_dataset.train_mask,
         "valid": reddit_dataset.val_mask,
         "test": reddit_dataset.test_mask,
