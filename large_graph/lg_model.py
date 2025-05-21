@@ -190,6 +190,36 @@ class MPNNs(torch.nn.Module):
 
         return x
 
+    def forward_weightless_l2(self, x, edge_index):
+        for i, _ in enumerate(self.local_convs):
+            if i<2:
+                x = self.weightless_conv(x, edge_index)
+                x = F.relu(x)
+        return x
+
+    def precomputed_weightless_forward_l2(self, x, edge_index):
+        for i, _ in enumerate(self.local_convs):
+            if i==0:
+                pass
+            elif i==1:
+                x = self.weightless_conv(x,edge_index)
+            x = F.relu(x)
+        return x
+
+    def linear_forward_weightless_l2(self, x, edge_index):
+        for i, _ in enumerate(self.local_convs):
+            if i<2:
+                x = self.weightless_conv(x, edge_index)
+        return x
+
+    def linear_precomputed_weightless_forward_l2(self, x, edge_index):
+        for i, _ in enumerate(self.local_convs):
+            if i==0:
+                pass
+            elif i==1:
+                x = self.weightless_conv(x,edge_index)
+        return x
+
     def weightless_conv(self, x, edge_index):
         local_conv = self.local_convs[0]
         normalised_edge_index, normalised_edge_weight = gcn_norm(
@@ -258,6 +288,7 @@ class MPNNs(torch.nn.Module):
         x = self.pred_local(x_final)
 
         return x
+    
     def linear_forward(self, x, edge_index):
 
         x = F.dropout(x, p=self.in_drop, training=self.training)
