@@ -3,8 +3,6 @@
 from math import pi
 from networkx import barabasi_albert_graph
 import torch as th
-import graph_construct as G
-import simplecs as s
 from torch import vmap
 
 from tqdm import tqdm, trange
@@ -19,7 +17,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 
+import graph_construct as G
+import simplecs as s
 from csbm import csbm
+
 from torch_geometric.data import Data
 
 from torch.nn import Linear, ReLU, Softmax, Sigmoid, Parameter
